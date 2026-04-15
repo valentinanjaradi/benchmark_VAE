@@ -1,3 +1,7 @@
+testing.ipynb
+my_models_on_mnist/
+results/mnist_ae_local/
+
 examples/data/cifar-10-python.tar.gz
 examples/data/cifar-10-batches-py/
 examples/data/*
