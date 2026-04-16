@@ -1,11 +1,23 @@
 testing.ipynb
 my_models_on_mnist/
 results/mnist_ae_local/
-
+submitit_job_log_mnist.json
+submitit_logs_mnist_ae/
 examples/data/cifar-10-python.tar.gz
 examples/data/cifar-10-batches-py/
 examples/data/*
 examples/scripts/data/
+
+# Ignore everything inside the target folder
+results/mnist_ae_grid*/**
+
+# Re-allow traversal into subdirectories
+!results/mnist_ae_grid*/**/
+
+# Re-include only the files you want
+!results/mnist_ae_grid*/**/ae_losses.json
+
+!results/mnist_ae_grid*/*.pkl
 
 codecov*
 
