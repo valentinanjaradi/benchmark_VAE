@@ -164,11 +164,14 @@ def train_linear_probe(Xhat_downstream, y_downstream, Xhat_test, y_test, num_epo
 
     # evaluate
     with torch.no_grad():
-        preds_training = probe(Xhat_downstream).argmax(dim=1)
-        preds_test = probe(Xhat_test).argmax(dim=1)
-        err_training = (preds_training != y_downstream).float().mean()
-        err_test = (preds_test != y_test).float().mean()
-        return err_training.item(), err_test.item(), losses
+        preds_training = probe(Xhat_downstream)
+        preds_test = probe(Xhat_test)
+        err_training = (preds_training.argmax(dim=1) != y_downstream).float().mean()
+        err_test = (preds_test.argmax(dim=1) != y_test).float().mean()
+        crossentropy_err_training = criterion(preds_training, y_downstream)
+        crossentropy_err_test = criterion(preds_test, y_test)
+
+        return err_training.item(), err_test.item(), crossentropy_err_training.item(), crossentropy_err_test.item(), losses
 
 
 
@@ -245,13 +248,14 @@ def run_one_seed(n_b, n_d_list, m,
 
         print(f'Training linear probe on {n_d} samples...', flush=True)
         with _timer('train linear probe'):
-            probe_err_train, probe_err_test, probe_losses = train_linear_probe(
+            probe_err_train, probe_err_test, crossentropy_err_train, crossentropy_err_test, probe_losses = train_linear_probe(
                 Xhat_downstream, y_down_nd, Xhat_test, y_test)
 
         result = dict(
             n_b=int(n_b), n_d=int(n_d), m=int(m), seed=int(seed), model_name=model_name,
             recon_train=recon_train, recon_test=recon_test,
             train_error=probe_err_train, gen_error=probe_err_test,
+            crossentropy_train=crossentropy_err_train, crossentropy_test=crossentropy_err_test,
             probe_losses=probe_losses,
             ae_train_losses=ae_train_losses, ae_eval_losses=ae_eval_losses,
         )
@@ -329,22 +333,21 @@ def run_local():
 
 def main():
     """Submit a SLURM job array over (n_b, n_d, m)."""
-    n_b_values = np.linspace(50, 5000, num=6).astype(int)
-    n_d_values = np.linspace(50, 5000,  num=6).astype(int)
-    m_values = np.linspace(14, 28*28, num=10).astype(int)  # from very small to full dimension
-
+    n_b_values = np.linspace(1, 1000, num=6).astype(int)
+    n_d_values = np.linspace(1, 1000,  num=6).astype(int)
+    m_values   = np.append(np.logspace(1, 9, num=14, base=2).astype(int), 28*28)
     model_name    = 'vae'
     seed          = 0
-    num_seeds     = 5
-    base_output_dir = 'results/mnist_ae_grid_train_longer'
+    num_seeds     = 3
+    base_output_dir = 'results/mnist_ae_grid_log_bottleneck'
 
     executor = submitit.AutoExecutor(folder='submitit_logs_mnist_ae')
     executor.update_parameters(
-        timeout_min=60,
+        timeout_min=120,
         slurm_partition='gpu_lowp',
         slurm_tasks_per_node=1,
         slurm_cpus_per_task=8,
-        slurm_mem_gb=4,
+        slurm_mem_gb=8,
         slurm_gres='gpu:1',
         slurm_job_name='mnist_ae_grid'
         #slurm_nodelist="gpu-xd670-30,gpu-sr675-31,gpu-sr675-33,gpu-sr675-34,gpu-sr675-35"
