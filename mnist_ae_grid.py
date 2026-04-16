@@ -280,7 +280,7 @@ def process_grid_job(n_b, n_d_list, m,
     Saves one aggregate pkl per n_d with mean/std over seeds.
     """
     os.makedirs(base_output_dir, exist_ok=True)
-    scalar_metrics = ['recon_train', 'recon_test', 'train_error', 'gen_error']
+    scalar_metrics = ['recon_train', 'recon_test', 'train_error', 'gen_error', 'crossentropy_test', 'crossentropy_train']
 
     # collect results across seeds
     all_results = {int(n_d): [] for n_d in n_d_list}
@@ -333,13 +333,13 @@ def run_local():
 
 def main():
     """Submit a SLURM job array over (n_b, n_d, m)."""
-    n_b_values = np.linspace(1, 1000, num=6).astype(int)
-    n_d_values = np.linspace(1, 1000,  num=6).astype(int)
-    m_values   = np.append(np.logspace(1, 9, num=14, base=2).astype(int), 28*28)
+    n_b_values = np.linspace(1, 3, num=6).astype(int)
+    n_d_values = np.logspace(1, 4.5, num=15).astype(int)
+    m_values   = np.append(np.logspace(2, 9, num=14, base=2).astype(int), 28*28)
     model_name    = 'vae'
     seed          = 0
     num_seeds     = 3
-    base_output_dir = 'results/mnist_ae_grid_log_bottleneck'
+    base_output_dir = 'results/mnist_ae_grid_log_bottleneck_log_nbnd'
 
     executor = submitit.AutoExecutor(folder='submitit_logs_mnist_ae')
     executor.update_parameters(
