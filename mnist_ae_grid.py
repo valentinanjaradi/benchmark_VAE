@@ -85,10 +85,11 @@ def load_mnist(n_base, n_downstream, data_dir='examples/scripts/data/mnist/', se
     return X_base, X_downstream, y_downstream, X_test, y_test
 
 def batched_reconstruct(model, X, batch_size=512):
+    device = next(model.parameters()).device
     parts = []
     for i in range(0, len(X), batch_size):
-        batch = X[i:i+batch_size].reshape(-1, 1, 28, 28)
-        parts.append(model.reconstruct(batch).reshape(len(batch), -1))
+        batch = X[i:i+batch_size].reshape(-1, 1, 28, 28).to(device)
+        parts.append(model.reconstruct(batch).cpu().reshape(len(batch), -1))
     return torch.cat(parts, dim=0)
 
 class LossLogger(TrainingCallback):
@@ -128,7 +129,7 @@ def train_pythae_ae(X_ae, X_test, latent_dim, output_dir=None):
     )
     training_config = BaseTrainerConfig.from_json_file('examples/scripts/configs/mnist/base_training_config.json')
     training_config.output_dir = output_dir
-    training_config.num_epochs = 5 if output_dir and 'local' in output_dir else 100
+    training_config.num_epochs = 100 if output_dir and 'local' in output_dir else 100
     pipeline = TrainingPipeline(training_config=training_config, model=model)
 
     loss_logger = LossLogger()
@@ -172,22 +173,24 @@ def train_linear_probe(Xhat_downstream, y_downstream, Xhat_test, y_test, num_epo
 
 
 # ---------------------------------------------------------------------------
-# Single grid point
+# Single grid column
 # ---------------------------------------------------------------------------
 
-def process_grid_job(n_b, n_d, m,
-                     X_base, X_downstream, y_downstream, X_test, y_test,
+def process_grid_job(n_b, n_d_list, m,
                      model_name='vae',
                      base_output_dir='results/mnist_ae_grid',
                      seed=0):
     """Train AE on n_b samples, regress on n_d samples, save result."""
 
+    print('Loading MNIST...', flush=True)
+    n_downstream_max = n_d_list.max()
+    X_base, X_downstream, y_downstream, X_test, y_test = load_mnist(
+        n_b, n_downstream_max, seed=seed
+    )
+
+
     # --- subsample AE training set ---
     X_ae = X_base[:n_b]
-
-    # --- subsample downstream set (disjoint from AE set) ---
-    X_downstream = X_downstream[:n_d]
-    y_downstream = y_downstream[:n_d]
 
     # --- train AE ---
     ae_output_dir = os.path.join(base_output_dir, f'ae_nb{n_b}_m{m}_seed{seed}')
@@ -196,10 +199,13 @@ def process_grid_job(n_b, n_d, m,
     runs = sorted(os.listdir(ae_output_dir))
     last_model_dir = os.path.join(ae_output_dir, runs[-1], "final_model") if runs else None
 
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
     if last_model_dir and os.path.isdir(last_model_dir):
         print("Found existing model, loading from:", last_model_dir)
         with _timer('load model'):
-            model = VAE.load_from_folder(last_model_dir)
+            model = VAE.load_from_folder(last_model_dir).to(device)
         ae_losses_path = os.path.join(last_model_dir, 'ae_losses.json')
         if os.path.exists(ae_losses_path):
             with open(ae_losses_path) as f:
@@ -212,7 +218,7 @@ def process_grid_job(n_b, n_d, m,
         print("No existing model found, training new model.")
         with _timer('train AE'):
             model, ae_train_losses, ae_eval_losses = train_pythae_ae(X_ae, X_test, latent_dim=m, output_dir=ae_output_dir)
-    
+        model = model.to(device)
         # load losses
         runs = sorted(os.listdir(ae_output_dir))
         last_model_dir = os.path.join(ae_output_dir, runs[-1], "final_model") if runs else None
@@ -223,8 +229,6 @@ def process_grid_job(n_b, n_d, m,
     # --- reconstruction errors ---
     model.eval()
     with torch.no_grad():
-        with _timer('reconstruct downstream'):
-            Xhat_downstream = batched_reconstruct(model, X_downstream)
         with _timer('reconstruct test'):
             Xhat_test = batched_reconstruct(model, X_test)
         with _timer('reconstruct ae train'):
@@ -232,32 +236,45 @@ def process_grid_job(n_b, n_d, m,
         recon_train = float(torch.mean((X_ae.reshape(len(X_ae), -1) - Xhat_ae) ** 2))
         recon_test  = float(torch.mean((X_test.reshape(len(X_test), -1) - Xhat_test) ** 2))
 
-    # --- train linear probe ---
-    print(f'Training linear probe on {n_d} samples...', flush=True)
-    with _timer('train linear probe'):
-        probe_err_training, probe_err_test, probe_losses = train_linear_probe(Xhat_downstream, y_downstream, Xhat_test, y_test)
 
-    print('done')
-    result = dict(
-        n_b=n_b, n_d=n_d, m=m, seed=seed, model_name=model_name,
-        recon_train=recon_train,
-        recon_test=recon_test,
-        train_error=probe_err_training,
-        gen_error=probe_err_test,
-        probe_losses=probe_losses,
-    )
+    for n_d in n_d_list:
+        # --- subsample downstream set (disjoint from AE set) ---
+        X_downstream = X_downstream[:n_d]
+        y_downstream = y_downstream[:n_d]
 
-    os.makedirs(base_output_dir, exist_ok=True)
-    fname = os.path.join(base_output_dir, f'result_nb_{n_b}_nd_{n_d}_m_{m}_seed_{seed}.pkl')
-    with open(fname, 'wb') as f:
-        pickle.dump(result, f)
+        # --- reconstruction downstream ---
+        model.eval()
+        with torch.no_grad():
+            with _timer('reconstruct downstream'):
+                Xhat_downstream = batched_reconstruct(model, X_downstream)
+            
 
-    print(f'[n_b={n_b:5d}, n_d={n_d:5d}, m={m:3d}] '
-          f'train={result["train_error"]:.4f}  '
-          f'gen={result["gen_error"]:.4f}  '
-          f'recon_test={result["recon_test"]:.6f}',
-          flush=True)
-    return result
+        # --- train linear probe ---
+        print(f'Training linear probe on {n_d} samples...', flush=True)
+        with _timer('train linear probe'):
+            probe_err_training, probe_err_test, probe_losses = train_linear_probe(Xhat_downstream, y_downstream, Xhat_test, y_test)
+
+        print('done')
+        result = dict(
+            n_b=n_b, n_d=n_d, m=m, seed=seed, model_name=model_name,
+            recon_train=recon_train,
+            recon_test=recon_test,
+            train_error=probe_err_training,
+            gen_error=probe_err_test,
+            probe_losses=probe_losses,
+        )
+
+        os.makedirs(base_output_dir, exist_ok=True)
+        fname = os.path.join(base_output_dir, f'result_nb_{n_b}_nd_{n_d}_m_{m}_seed_{seed}.pkl')
+        with open(fname, 'wb') as f:
+            pickle.dump(result, f)
+
+        print(f'[n_b={n_b:5d}, n_d={n_d:5d}, m={m:3d}] '
+            f'train={result["train_error"]:.4f}  '
+            f'gen={result["gen_error"]:.4f}  '
+            f'recon_test={result["recon_test"]:.6f}',
+            flush=True)
+    return
 
 
 # ---------------------------------------------------------------------------
@@ -271,20 +288,15 @@ def run_local():
     n_d_values = np.array([50, 100, 200, 300])
     m_values   = np.array([14])#, 100]
 
-    print('Loading MNIST...', flush=True)
-    X_base, X_downstream, y_downstream, X_test, y_test = load_mnist(n_b_values.max(), n_d_values.max(), seed=seed)
-
 
     for n_b in n_b_values:
-        for n_d in n_d_values:
-            for m in m_values:
-                process_grid_job(
-                    n_b=n_b, n_d=n_d, m=m,
-                    X_base=X_base, X_downstream=X_downstream, y_downstream=y_downstream, X_test=X_test, y_test=y_test,
-                    model_name='vae',
-                    base_output_dir='results/mnist_ae_local',
-                    seed=seed,
-                )
+        for m in m_values:
+            process_grid_job(
+                n_b=n_b, n_d_list=n_d_values, m=m,
+                model_name='vae',
+                base_output_dir='results/mnist_ae_local',
+                seed=seed,
+            )
     print('Local test done. Results in results/mnist_ae_local/')
 
 
@@ -295,30 +307,26 @@ def main():
     m_values = np.linspace(14, 28*28, num=10).astype(int)  # from very small to full dimension
 
     model_name    = 'vae'
-    seed          = 0
+    seed          = 2
     base_output_dir = 'results/mnist_ae_grid'
-
-    print('Loading MNIST...', flush=True)
-    X_base, X_downstream, y_downstream, X_test, y_test = load_mnist(n_b_values.max(), n_d_values.max(), seed=seed)
 
     executor = submitit.AutoExecutor(folder='submitit_logs_mnist_ae')
     executor.update_parameters(
-        timeout_min=240,
+        timeout_min=60,
         slurm_partition='gpu_lowp',
         slurm_tasks_per_node=1,
         slurm_cpus_per_task=8,
-        slurm_mem_gb=8,
+        slurm_mem_gb=4,
         slurm_gres='gpu:1',
-        slurm_job_name='mnist_ae_grid',
+        slurm_job_name='mnist_ae_grid'
+        #slurm_nodelist="gpu-xd670-30,gpu-sr675-31,gpu-sr675-33,gpu-sr675-34,gpu-sr675-35"
     )
 
     all_args = [
-        (n_b, n_d, m,
-         X_base, X_downstream, y_downstream, X_test, y_test,
+        (n_b, n_d_values, m,
          model_name,
          base_output_dir, seed)
         for n_b in n_b_values
-        for n_d in n_d_values
         for m   in m_values
     ]
 
@@ -331,10 +339,10 @@ def main():
         'n_tasks':         len(jobs),
         'base_output_dir': base_output_dir,
         'model_name':      model_name,
-        'n_b_values':      n_b_values,
-        'n_d_values':      n_d_values,
-        'm_values':        m_values,
-        'seed':            seed,
+        'n_b_values':      n_b_values.tolist(),
+        'n_d_values':      n_d_values.tolist(),
+        'm_values':        m_values.tolist(),
+        'seed':            int(seed),
     }
     log_path = 'submitit_job_log_mnist.json'
     log = json.load(open(log_path)) if os.path.exists(log_path) else []
