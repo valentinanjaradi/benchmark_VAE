@@ -357,9 +357,17 @@ def main():
         (n_b, n_d_values, m, model_name, base_output_dir, seed, num_seeds)
         for n_b in n_b_values
         for m   in m_values
+        if not all(
+            os.path.exists(os.path.join(base_output_dir, f'result_nb_{n_b}_nd_{n_d}_m_{m}_agg.pkl'))
+            for n_d in n_d_values
+        )
     ]
 
-    print(f'Submitting {len(all_args)} jobs...', flush=True)
+    total = len(n_b_values) * len(m_values)
+    print(f'Submitting {len(all_args)} / {total} jobs ({total - len(all_args)} already done)...', flush=True)
+    if not all_args:
+        print('Nothing to submit.')
+        return
     jobs = executor.map_array(process_grid_job, *zip(*all_args))
 
     log_entry = {

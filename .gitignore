@@ -11,12 +11,6 @@ examples/scripts/data/
 # Ignore everything inside the target folder
 results/mnist_ae_grid*/**
 
-# Re-allow traversal into subdirectories
-!results/mnist_ae_grid*/**/
-
-# Re-include only the files you want
-!results/mnist_ae_grid*/**/ae_losses.json
-
 !results/mnist_ae_grid*/*.pkl
 
 codecov*
