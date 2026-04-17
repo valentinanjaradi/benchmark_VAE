@@ -130,6 +130,9 @@ def train_pythae_ae(X_ae, X_test, latent_dim, output_dir=None):
     training_config = BaseTrainerConfig.from_json_file('examples/scripts/configs/mnist/base_training_config.json')
     training_config.output_dir = output_dir
     training_config.num_epochs = 100 if output_dir and 'local' in output_dir else 500
+    if X_ae.shape[0] < training_config.per_device_train_batch_size:
+        training_config.per_device_train_batch_size = X_ae.shape[0]
+
     pipeline = TrainingPipeline(training_config=training_config, model=model)
 
     loss_logger = LossLogger()
@@ -333,17 +336,17 @@ def run_local():
 
 def main():
     """Submit a SLURM job array over (n_b, n_d, m)."""
-    n_b_values = np.linspace(1, 3, num=6).astype(int)
+    n_b_values = np.logspace(1, 4.5, 15).astype(int)[-6:] #np.logspace(1, 3, num=6).astype(int)
     n_d_values = np.logspace(1, 4.5, num=15).astype(int)
     m_values   = np.append(np.logspace(2, 9, num=14, base=2).astype(int), 28*28)
     model_name    = 'vae'
     seed          = 0
     num_seeds     = 3
-    base_output_dir = 'results/mnist_ae_grid_log_bottleneck_log_nbnd'
+    base_output_dir = '/ceph/scratch/vnjaradi/benchmark_VAE/results/mnist_ae_grid_log_bottleneck_log_nbnd'
 
     executor = submitit.AutoExecutor(folder='submitit_logs_mnist_ae')
     executor.update_parameters(
-        timeout_min=120,
+        timeout_min=180,
         slurm_partition='gpu_lowp',
         slurm_tasks_per_node=1,
         slurm_cpus_per_task=8,
