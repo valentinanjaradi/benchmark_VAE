@@ -109,7 +109,9 @@ class LossLogger(TrainingCallback):
 # Pythae AE training
 # ---------------------------------------------------------------------------
 
-def train_pythae_ae(X_ae, X_test, latent_dim, output_dir=None):
+
+
+def train_pythae_ae(X_ae, X_test, latent_dim, output_dir=None, small_init=False):
     """Train a pythae autoencoder on X_ae (numpy float32, shape [n, d]).
 
     Returns (model, ae_train_losses, ae_eval_losses).
@@ -117,19 +119,26 @@ def train_pythae_ae(X_ae, X_test, latent_dim, output_dir=None):
 
     X_ae   = X_ae.reshape(-1, 1, 28, 28)
     X_test = X_test.reshape(-1, 1, 28, 28)
-    input_dim = tuple(X_ae.shape[1:])
 
     model_config = VAEConfig.from_json_file('examples/scripts/configs/mnist/vae_config.json')
-    model_config.input_dim  = input_dim
+    model_config.input_dim  = (1, 28, 28)
     model_config.latent_dim = int(latent_dim)
     model = VAE(
         model_config=model_config,
         encoder=Encoder_VAE(model_config),
         decoder=Decoder_AE(model_config),
     )
+    if small_init:
+        def weights_init(m):
+            if isinstance(m, torch.nn.Conv2d) or isinstance(m, torch.nn.Linear):
+                torch.nn.init.xavier_uniform_(m.weight)
+                torch.nn.init.zero_(m.bias)
+
+        model.apply(weights_init)
+
     training_config = BaseTrainerConfig.from_json_file('examples/scripts/configs/mnist/base_training_config.json')
     training_config.output_dir = output_dir
-    training_config.num_epochs = 100 if output_dir and 'local' in output_dir else 500
+    training_config.num_epochs = 1 if output_dir and 'local' in output_dir else 1000
     if X_ae.shape[0] < training_config.per_device_train_batch_size:
         training_config.per_device_train_batch_size = X_ae.shape[0]
 
@@ -152,7 +161,7 @@ def train_linear_probe(Xhat_downstream, y_downstream, Xhat_test, y_test, num_epo
     probe = torch.nn.Linear(Xhat_downstream.shape[1], 10)  # 10 classes
 
     # train only the probe
-    optimizer = torch.optim.Adam(probe.parameters(), lr=5e-3)
+    optimizer = torch.optim.Adam(probe.parameters(), lr=1e-2)
     criterion = torch.nn.CrossEntropyLoss()
 
     # train probe
@@ -185,7 +194,8 @@ def train_linear_probe(Xhat_downstream, y_downstream, Xhat_test, y_test, num_epo
 def run_one_seed(n_b, n_d_list, m,
                  model_name='vae',
                  base_output_dir='results/mnist_ae_grid',
-                 seed=0):
+                 seed=0,
+                 small_init=False):
     """Train AE on n_b samples, run linear probes for all n_d values.
 
     Returns a list of result dicts, one per n_d value.
@@ -221,7 +231,8 @@ def run_one_seed(n_b, n_d_list, m,
         print("No existing model found, training new model.")
         with _timer('train AE'):
             model, ae_train_losses, ae_eval_losses = train_pythae_ae(
-                X_ae, X_test, latent_dim=m, output_dir=ae_output_dir)
+                X_ae, X_test, latent_dim=m, output_dir=ae_output_dir, small_init=small_init
+            )
         model = model.to(device)
         runs = sorted(os.listdir(ae_output_dir))
         last_model_dir = os.path.join(ae_output_dir, runs[-1], "final_model")
@@ -277,7 +288,8 @@ def process_grid_job(n_b, n_d_list, m,
                      model_name='vae',
                      base_output_dir='results/mnist_ae_grid',
                      seed=0,
-                     num_seeds=1):
+                     num_seeds=1,
+                     small_init=False):
     """Run num_seeds seeds for one (n_b, m) point.
 
     Saves one aggregate pkl per n_d with mean/std over seeds.
@@ -288,7 +300,7 @@ def process_grid_job(n_b, n_d_list, m,
     # collect results across seeds
     all_results = {int(n_d): [] for n_d in n_d_list}
     for s in range(seed, seed + num_seeds):
-        for r in run_one_seed(n_b, n_d_list, m, model_name, base_output_dir, seed=s):
+        for r in run_one_seed(n_b, n_d_list, m, model_name, base_output_dir, seed=s, small_init=small_init):
             all_results[r['n_d']].append(r)
 
     # save aggregate (mean + std over seeds) for each n_d
@@ -330,24 +342,26 @@ def run_local():
                 base_output_dir='results/mnist_ae_local',
                 seed=seed,
                 num_seeds=num_seeds,
+                small_init=False
             )
     print('Local test done. Results in results/mnist_ae_local/')
 
 
 def main():
     """Submit a SLURM job array over (n_b, n_d, m)."""
-    n_b_values = np.logspace(1, 4.5, 15).astype(int)[-6:] #np.logspace(1, 3, num=6).astype(int)
-    n_d_values = np.logspace(1, 4.5, num=15).astype(int)
-    m_values   = np.append(np.logspace(2, 9, num=14, base=2).astype(int), 28*28)
+    n_b_values = np.logspace(1, 4.5, 6).astype(int)#np.logspace(1, 4.5, 15).astype(int)[-6:] #np.logspace(1, 3, num=6).astype(int)
+    n_d_values = np.logspace(1, 4.5, 6).astype(int)#np.logspace(1, 4.5, num=15).astype(int)
+    m_values   = np.append(np.logspace(2, 9, num=9, base=2).astype(int), 28*28) #np.append(np.logspace(2, 9, num=14, base=2).astype(int), 28*28)
     model_name    = 'vae'
     seed          = 0
-    num_seeds     = 3
-    base_output_dir = '/ceph/scratch/vnjaradi/benchmark_VAE/results/mnist_ae_grid_log_bottleneck_log_nbnd'
+    num_seeds     = 2
+    base_output_dir = '/ceph/scratch/vnjaradi/benchmark_VAE/results/mnist_ae_grid_small_init'
+    small_init    = True
 
     executor = submitit.AutoExecutor(folder='submitit_logs_mnist_ae')
     executor.update_parameters(
         timeout_min=180,
-        slurm_partition='gpu_lowp',
+        slurm_partition='gpu_lowp,gpu,a100',
         slurm_tasks_per_node=1,
         slurm_cpus_per_task=8,
         slurm_mem_gb=8,
@@ -357,7 +371,7 @@ def main():
     )
 
     all_args = [
-        (n_b, n_d_values, m, model_name, base_output_dir, seed, num_seeds)
+        (n_b, n_d_values, m, model_name, base_output_dir, seed, num_seeds, small_init)
         for n_b in n_b_values
         for m   in m_values
         if not all(
